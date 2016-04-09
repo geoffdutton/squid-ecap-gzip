@@ -299,11 +299,134 @@ void Adapter::Xaction::start() {
     libecap::shared_ptr<libecap::Message> adapted = hostx->virgin().clone();
     Must(adapted != 0);
 
+
+    /**
+     * Checks the request's Accept-Encoding header if the client does understand gzip compression at all.
+     */
+    static const libecap::Name acceptEncodingName("Accept-Encoding");
+
+    // Set default value
+    this->requirements.requestAcceptEncodingOk = false;
+
+    if(hostx->cause().header().hasAny(acceptEncodingName)) {
+        const libecap::Header::Value acceptEncoding = hostx->cause().header().value(acceptEncodingName);
+
+        if(acceptEncoding.size > 0) {
+            std::string acceptEncodingString = acceptEncoding.toString(); // expensive
+            if(strstr(acceptEncodingString.c_str(),"gzip")) {
+                this->requirements.requestAcceptEncodingOk = true;
+            }
+        }
+    }
+
+    /**
+     * Checks if the response Cache-Control header allows transformation of the response.
+     */
+    static const libecap::Name cacheControlName("Cache-Control");
+
+    // Set default value
+    this->requirements.responseCacheControlOk = true;
+
+    if(adapted->header().hasAny(cacheControlName)) {
+        const libecap::Header::Value cacheControl = adapted->header().value(cacheControlName);
+        if(cacheControl.size > 0) {
+            std::string cacheControlString = cacheControl.toString(); // expensive
+            if(strstr(cacheControlString.c_str(),"no-transform")) {
+                this->requirements.responseCacheControlOk = false;
+            }
+        }
+    }
+
+    /**
+     * Do not compress if response has a content-range header and status code "206 Partial content".
+     */
+    static const libecap::Name contentRangeName("Content-Range");
+
+    // Set default value
+    this->requirements.responseContentRangeOk = true;
+
+    if(adapted->header().hasAny(contentRangeName)) {
+        this->requirements.responseContentRangeOk = false;
+    }
+
+    /**
+     * Checks the Content-Type response header.
+     * At this time, only responses with "text/html" content-type are allowed to be compressed.
+     */
+    static const libecap::Name contentTypeName("Content-Type");
+
+    // Set default value
+    this->requirements.responseContentTypeOk = false;
+
+    if(adapted->header().hasAny(contentTypeName)) {
+        const libecap::Header::Value contentType = adapted->header().value(contentTypeName);
+        if(contentType.size > 0) {
+            std::string contentTypeString = contentType.toString(); // expensive
+            if(strstr(contentTypeString.c_str(),"text/html")) {
+                this->requirements.responseContentTypeOk = true;
+            }
+        }
+    }
+
+    /**
+     * Checks the Content-Encoding response header.
+     * If this header is present, we must not compress the respone.
+     */
+    static const libecap::Name contentEncodingName("Content-Encoding");
+
+    // Set default value
+    this->requirements.responseContentEncodingOk = true;
+
+    if(adapted->header().hasAny(contentEncodingName)) {
+        this->requirements.responseContentTypeOk = false;
+    }
+
+    // delete ContentLength header because we may change the length
+    // unknown length may have performance implications for the host
+    adapted->header().removeAny(libecap::headerContentLength);
+
     // add a custom header
-    static const libecap::Name name("X-Ecap");
-    const libecap::Header::Value value = libecap::Area::FromTempString("VIGOS eCAP GZIP Adapter");
+    static const libecap::Name name("X-Ecap-Test");
+    const libecap::Header::Value value = libecap::Area::FromTempString("VIGOS eCAP GZIP Adapter testing");
     adapted->header().add(name, value);
-    hostx->useAdapted(adapted);
+
+    // Add "Vary: Accept-Encoding" response header if Content-Type is "text/html"
+    if(requirements.responseContentTypeOk) {
+        static const libecap::Name varyName("Vary");
+        const libecap::Header::Value varyValue = libecap::Area::FromTempString("Accept-Encoding");
+        adapted->header().add(varyName, varyValue);
+    }
+
+    if (!adapted->body()) {
+        sendingAb = opNever; // there is nothing to send
+        lastHostCall()->useAdapted(adapted);
+    } else {
+        if(requirementsAreMet()) {
+            // Remove Content-Location header
+            static const libecap::Name contentLocationName("Content-Location");
+            adapted->header().removeAny(contentLocationName);
+
+            // Remove ETag response header
+            static const libecap::Name eTagName("ETag");
+            adapted->header().removeAny(eTagName);
+
+            // Add "Content-Encoding: gzip" response header
+            static const libecap::Name contentEncodingName("Content-Encoding");
+            const libecap::Header::Value contentEncodingValue = libecap::Area::FromTempString("gzip");
+            adapted->header().add(contentEncodingName, contentEncodingValue);
+
+            // Add Warning header to response, according to RFC 2616 14.46
+            static const libecap::Name warningName("Warning");
+            const libecap::Header::Value warningValue = libecap::Area::FromTempString("214 Transformation applied");
+            adapted->header().add(warningName, warningValue);
+
+            gzipInitialize();
+            hostx->useAdapted(adapted);
+        } else {
+            hostx->useVirgin();
+            abDiscard();
+        }
+    }
 }
 
 void Adapter::Xaction::stop() {
@@ -477,4 +600,3 @@ libecap::host::Xaction *Adapter::Xaction::lastHostCall() {
 
 // create the adapter and register with libecap to reach the host application
 static const bool Registered = (libecap::RegisterVersionedService(new Adapter::Service));
-
