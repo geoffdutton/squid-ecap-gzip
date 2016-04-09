@@ -13,6 +13,16 @@ installed from source, usually by running:
 make
 make install
 ```
+OR
+
+```
+## 32 bit GCC
+./configure 'CXXFLAGS=-O2 -m32 -pipe' 'CFLAGS=-O2 -m32 -pipe' 'LDFLAGS=-L/usr/local/lib'
+## 64 bit GCC
+./configure 'CXXFLAGS=-O2 -m64 -pipe' 'CFLAGS=-O2 -m64 -pipe' 'LDFLAGS=-L/usr/local/lib'
+gmake
+gmake install-strip
+```
 
 For eCAP documentation, the libecap library implementation, and support
 information, please visit the eCAP project web site: http://www.e-cap.org/
